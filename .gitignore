@@ -1,0 +1,9 @@
+# Binaries and test artifacts
+*.exe
+*.test
+*.out
+coverage.*
+
+# IDE
+.idea/
+.vscode/
