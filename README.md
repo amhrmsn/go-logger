@@ -43,7 +43,7 @@
 | 🤝 **`slog`-Native** | Works directly with `*slog.Logger`. No wrapper types, 100% compatible with the ecosystem. |
 | ⚡ **AsyncHandler** | Non-blocking I/O via a background goroutine with configurable buffer and drop policies. |
 | 🕵️ **RedactionHandler** | Protects sensitive data (PII) via key-based, pattern-based (Regex), and type-based redaction. |
-| 🎲 **SamplingHandler** | Reduces log volume and storage costs with probabilistic filtering and per-level rates. |
+| 🎲 **SamplingHandler** | Reduces log volume with probabilistic filtering, per-level rates, and burst sampling (first-N-per-message guaranteed). |
 | 🎛️ **ModuleHandler** | Per-component log level filtering with runtime hot-reload capabilities. |
 | 🔀 **MultiHandler** | Fan-out capability to write logs to multiple outputs simultaneously (e.g., stdout + file). |
 | 🧱 **Builder API** | Fluent, safe API for composing middleware chains in the correct topological order. |
@@ -151,7 +151,18 @@ h := handler.NewSamplingHandler(
 	}),
 )
 ```
-*Note: Rates can be adjusted at runtime lock-free using `h.SetRate(0.5)`.*
+*Note: Rates can be adjusted at runtime lock-free using `h.SetRate(0.5)` and `h.SetLevelRate(slog.LevelInfo, 0.2)`.*
+
+For repetitive floods, **burst sampling** guarantees the first occurrences of every message are kept — something probabilistic sampling cannot promise:
+
+```go
+h := handler.NewSamplingHandler(
+	slog.NewJSONHandler(os.Stdout, nil),
+	// Per unique message: first 5 records each second always pass,
+	// then every 100th. Errors still bypass sampling entirely.
+	handler.WithBurstSampling(time.Second, 5, 100),
+)
+```
 
 ### ModuleHandler
 Provides fine-grained, per-component log level filtering that can be updated at runtime without restarting the application.
@@ -221,6 +232,14 @@ log := slog.New(h)
 defer logger.Close(h) // Safely cascades through all layers to close the AsyncHandler
 ```
 **Execution Order:** `ModuleHandler` → `SamplingHandler` → `RedactionHandler` → `AsyncHandler` → `JSONHandler`
+
+Need a specific handler back out of the chain (e.g. for runtime stats)? Use the generic `Find`:
+
+```go
+if async, ok := logger.Find[*handler.AsyncHandler](log.Handler()); ok {
+	fmt.Println("dropped:", async.Stats().Dropped)
+}
+```
 
 ---
 
@@ -312,6 +331,7 @@ go-logger/
 ├── lifecycle.go        # Closer/Flusher/Unwrapper interfaces and chain traversal
 ├── exit.go             # Exit()/Fatal(): flush-then-terminate helpers
 ├── context.go          # NewContext()/FromContext(): request-scoped loggers
+├── find.go             # Find[T](): locate a handler inside the middleware chain
 ├── builder.go          # Fluent Builder API
 ├── handler/            # Core Middlewares
 │   ├── multi.go        # Fan-out

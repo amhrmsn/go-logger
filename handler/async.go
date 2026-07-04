@@ -297,7 +297,12 @@ func (h *AsyncHandler) Close() error {
 // can be enqueued after closed is set. This eliminates the race window between
 // Handle checking closed and CloseContext setting it.
 //
-// The context can be used to set a deadline for the drain operation.
+// The context deadline bounds waiting for the worker to finish draining. It
+// does not bound the initial close signal, which briefly acquires an internal
+// lock: with the [Block] policy, a producer stalled inside an inner handler
+// that never returns can delay that acquisition indefinitely. In practice
+// this only matters with a pathologically stuck sink.
+//
 // After CloseContext returns, any further calls to Handle return [ErrHandlerClosed].
 func (h *AsyncHandler) CloseContext(ctx context.Context) error {
 	h.core.closeOnce.Do(func() {

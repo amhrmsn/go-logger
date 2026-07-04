@@ -1,14 +1,25 @@
 package handler
 
-import "log/slog"
+import (
+	"log/slog"
+	"time"
+)
 
 // SampleOption configures a [SamplingHandler].
 type SampleOption func(*sampleOptions)
+
+// burstConfig holds the configuration collected by [WithBurstSampling].
+type burstConfig struct {
+	interval   time.Duration
+	first      uint64
+	thereafter uint64
+}
 
 // sampleOptions holds the collected configuration for [SamplingHandler].
 type sampleOptions struct {
 	defaultRate float64
 	levelRates  map[slog.Level]float64
+	burst       *burstConfig
 	bypassLevel *slog.Level
 }
 
@@ -43,6 +54,32 @@ func WithSampleByLevel(rates map[slog.Level]float64) SampleOption {
 		o.levelRates = make(map[slog.Level]float64, len(rates))
 		for k, v := range rates {
 			o.levelRates[k] = clampRate(v)
+		}
+	}
+}
+
+// WithBurstSampling enables deterministic burst sampling: within each
+// interval window, the first `first` records per unique message pass, then
+// every `thereafter`-th record passes (thereafter=0 drops everything after
+// the first `first`).
+//
+// Unlike probabilistic sampling, this guarantees the first occurrences of a
+// rare event are always logged while repetitive floods are trimmed. When
+// configured, burst sampling replaces the probabilistic decision entirely
+// ([WithSampleRate] and [WithSampleByLevel] are ignored); the bypass level
+// still applies.
+//
+// Counting is approximate: messages are hashed into a fixed array of 1024
+// counters, so distinct messages can occasionally share a counter. Memory is
+// bounded regardless of message cardinality.
+//
+// An interval <= 0 defaults to one second.
+func WithBurstSampling(interval time.Duration, first, thereafter uint64) SampleOption {
+	return func(o *sampleOptions) {
+		o.burst = &burstConfig{
+			interval:   interval,
+			first:      first,
+			thereafter: thereafter,
 		}
 	}
 }

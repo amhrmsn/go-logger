@@ -119,6 +119,35 @@ func TestModuleHandler_DefaultLevel_UnknownComponent(t *testing.T) {
 	}
 }
 
+// --- Levels / DefaultLevel snapshot ---
+
+func TestModuleConfig_Levels_Snapshot(t *testing.T) {
+	t.Parallel()
+
+	c := NewModuleConfig(slog.LevelInfo)
+	c.SetLevel("database", slog.LevelDebug)
+	c.SetLevel("auth", slog.LevelWarn)
+
+	snap := c.Levels()
+	if len(snap) != 2 || snap["database"] != slog.LevelDebug || snap["auth"] != slog.LevelWarn {
+		t.Errorf("unexpected snapshot: %v", snap)
+	}
+	if c.DefaultLevel() != slog.LevelInfo {
+		t.Errorf("DefaultLevel: expected Info, got %v", c.DefaultLevel())
+	}
+
+	// The snapshot is a copy: mutating it must not affect the config, and
+	// later SetLevel calls must not be reflected in it.
+	snap["database"] = slog.LevelError
+	c.SetLevel("api", slog.LevelDebug)
+	if got := c.levelFor("database").Level(); got != slog.LevelDebug {
+		t.Error("mutating the snapshot must not affect the config")
+	}
+	if _, ok := snap["api"]; ok {
+		t.Error("snapshot must not reflect later SetLevel calls")
+	}
+}
+
 // --- SetLevels spec parsing ---
 
 func TestModuleConfig_SetLevels_Valid(t *testing.T) {

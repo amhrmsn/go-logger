@@ -8,6 +8,11 @@ import (
 	"github.com/amhrmsn/go-logger/internal/record"
 )
 
+// maxUnwrapDepth bounds child-chain traversal so a degenerate cyclic Unwrap
+// chain cannot loop forever. Mirrors the same guard in the root logger
+// package.
+const maxUnwrapDepth = 100
+
 // MultiHandler fans out log records to multiple [slog.Handler] implementations
 // simultaneously.
 //
@@ -120,7 +125,7 @@ func (m *MultiHandler) WithGroup(name string) slog.Handler {
 func (m *MultiHandler) CloseContext(ctx context.Context) error {
 	var errs []error
 	for _, h := range m.handlers {
-		for cur := h; cur != nil; {
+		for cur, depth := h, 0; cur != nil && depth < maxUnwrapDepth; depth++ {
 			if c, ok := cur.(interface{ CloseContext(context.Context) error }); ok {
 				if err := c.CloseContext(ctx); err != nil {
 					errs = append(errs, err)
@@ -150,7 +155,7 @@ func (m *MultiHandler) CloseContext(ctx context.Context) error {
 func (m *MultiHandler) FlushContext(ctx context.Context) error {
 	var errs []error
 	for _, h := range m.handlers {
-		for cur := h; cur != nil; {
+		for cur, depth := h, 0; cur != nil && depth < maxUnwrapDepth; depth++ {
 			if f, ok := cur.(interface{ FlushContext(context.Context) error }); ok {
 				if err := f.FlushContext(ctx); err != nil {
 					errs = append(errs, err)

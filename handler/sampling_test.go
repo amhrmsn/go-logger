@@ -2,6 +2,7 @@ package handler
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -9,6 +10,7 @@ import (
 	"sync"
 	"testing"
 	"testing/slogtest"
+	"time"
 )
 
 // --- slogtest compliance ---
@@ -566,5 +568,211 @@ func TestSamplingHandler_NaN_Rate(t *testing.T) {
 	// NaN rate: rand.Float64() < NaN → false → dropped. This is safe.
 	if buf.Len() != 0 {
 		t.Errorf("NaN rate should drop all records, got output: %s", buf.String())
+	}
+}
+
+// --- Burst sampling ---
+
+// burstHandle sends a record with a controlled message and timestamp through
+// the handler, returning true if it reached the inner handler.
+func burstHandle(t *testing.T, h *SamplingHandler, buf *bytes.Buffer, msg string, at time.Time) bool {
+	t.Helper()
+	before := buf.Len()
+	r := slog.NewRecord(at, slog.LevelInfo, msg, 0)
+	if err := h.Handle(context.Background(), r); err != nil {
+		t.Fatalf("Handle error: %v", err)
+	}
+	return buf.Len() > before
+}
+
+func TestSamplingHandler_Burst_FirstThenEveryMth(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+	h := NewSamplingHandler(
+		slog.NewJSONHandler(&buf, nil),
+		WithBurstSampling(time.Second, 3, 2),
+	)
+
+	base := time.Date(2026, 7, 4, 12, 0, 0, 0, time.UTC)
+	var passes []int
+	for i := 1; i <= 10; i++ {
+		if burstHandle(t, h, &buf, "flood", base) {
+			passes = append(passes, i)
+		}
+	}
+
+	// first=3: records 1-3 pass. thereafter=2: then every 2nd (5, 7, 9).
+	want := []int{1, 2, 3, 5, 7, 9}
+	if len(passes) != len(want) {
+		t.Fatalf("expected passes %v, got %v", want, passes)
+	}
+	for i := range want {
+		if passes[i] != want[i] {
+			t.Fatalf("expected passes %v, got %v", want, passes)
+		}
+	}
+}
+
+func TestSamplingHandler_Burst_ThereafterZero_DropsRest(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+	h := NewSamplingHandler(
+		slog.NewJSONHandler(&buf, nil),
+		WithBurstSampling(time.Second, 2, 0),
+	)
+
+	base := time.Date(2026, 7, 4, 12, 0, 0, 0, time.UTC)
+	passed := 0
+	for i := 0; i < 20; i++ {
+		if burstHandle(t, h, &buf, "flood", base) {
+			passed++
+		}
+	}
+	if passed != 2 {
+		t.Errorf("thereafter=0: expected exactly 2 passes, got %d", passed)
+	}
+}
+
+func TestSamplingHandler_Burst_WindowReset(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+	h := NewSamplingHandler(
+		slog.NewJSONHandler(&buf, nil),
+		WithBurstSampling(time.Second, 1, 0),
+	)
+
+	base := time.Date(2026, 7, 4, 12, 0, 0, 0, time.UTC)
+	if !burstHandle(t, h, &buf, "event", base) {
+		t.Fatal("first record in window must pass")
+	}
+	if burstHandle(t, h, &buf, "event", base.Add(100*time.Millisecond)) {
+		t.Fatal("second record in same window must be dropped")
+	}
+	// Next window: counter resets.
+	if !burstHandle(t, h, &buf, "event", base.Add(2*time.Second)) {
+		t.Error("first record of a new window must pass")
+	}
+}
+
+func TestSamplingHandler_Burst_PerMessageIndependence(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+	h := NewSamplingHandler(
+		slog.NewJSONHandler(&buf, nil),
+		WithBurstSampling(time.Second, 1, 0),
+	)
+
+	base := time.Date(2026, 7, 4, 12, 0, 0, 0, time.UTC)
+	if !burstHandle(t, h, &buf, "message-a", base) {
+		t.Fatal("first message-a must pass")
+	}
+	if burstHandle(t, h, &buf, "message-a", base) {
+		t.Fatal("second message-a must be dropped")
+	}
+	// A different message has its own counter (assuming no bucket collision
+	// between these two fixed strings).
+	if !burstHandle(t, h, &buf, "message-b", base) {
+		t.Error("first message-b must pass independently of message-a")
+	}
+}
+
+func TestSamplingHandler_Burst_BypassLevelStillApplies(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+	h := NewSamplingHandler(
+		slog.NewJSONHandler(&buf, nil),
+		WithBurstSampling(time.Second, 1, 0),
+	)
+
+	base := time.Date(2026, 7, 4, 12, 0, 0, 0, time.UTC)
+	// Errors bypass sampling entirely — all pass despite first=1.
+	for i := 0; i < 5; i++ {
+		before := buf.Len()
+		r := slog.NewRecord(base, slog.LevelError, "critical", 0)
+		if err := h.Handle(context.Background(), r); err != nil {
+			t.Fatalf("Handle error: %v", err)
+		}
+		if buf.Len() == before {
+			t.Fatalf("error record %d must bypass burst sampling", i)
+		}
+	}
+}
+
+func TestSamplingHandler_Burst_SharedAcrossClones(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+	h := NewSamplingHandler(
+		slog.NewJSONHandler(&buf, nil),
+		WithBurstSampling(time.Second, 1, 0),
+	)
+	clone := h.WithAttrs([]slog.Attr{slog.String("k", "v")}).(*SamplingHandler)
+
+	base := time.Date(2026, 7, 4, 12, 0, 0, 0, time.UTC)
+	if !burstHandle(t, h, &buf, "shared", base) {
+		t.Fatal("first record must pass")
+	}
+	// The clone shares the same burst counters.
+	if burstHandle(t, clone, &buf, "shared", base) {
+		t.Error("clone must share burst state with the original")
+	}
+}
+
+func TestSamplingHandler_Burst_ConcurrentNoRace(t *testing.T) {
+	t.Parallel()
+
+	h := NewSamplingHandler(
+		slog.NewJSONHandler(io.Discard, nil),
+		WithBurstSampling(10*time.Millisecond, 5, 3),
+	)
+	log := slog.New(h)
+
+	var wg sync.WaitGroup
+	for g := 0; g < 16; g++ {
+		wg.Add(1)
+		go func(n int) {
+			defer wg.Done()
+			for i := 0; i < 500; i++ {
+				log.Info("concurrent burst", "g", n, "i", i)
+			}
+		}(g)
+	}
+	wg.Wait()
+	// No race / panic = success; counting is approximate by design.
+}
+
+// --- SetLevelRate ---
+
+func TestSamplingHandler_SetLevelRate(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+	h := NewSamplingHandler(
+		slog.NewJSONHandler(&buf, nil),
+		WithSampleByLevel(map[slog.Level]float64{slog.LevelInfo: 0.0}),
+	)
+	log := slog.New(h)
+
+	log.Info("dropped")
+	if buf.Len() != 0 {
+		t.Fatal("info must be dropped at rate 0.0")
+	}
+
+	if !h.SetLevelRate(slog.LevelInfo, 1.0) {
+		t.Fatal("SetLevelRate must report true for a configured level")
+	}
+	log.Info("now passes")
+	if buf.Len() == 0 {
+		t.Error("info must pass after SetLevelRate(1.0)")
+	}
+
+	// Unconfigured level cannot be added at runtime.
+	if h.SetLevelRate(slog.LevelDebug, 0.5) {
+		t.Error("SetLevelRate must report false for an unconfigured level")
 	}
 }

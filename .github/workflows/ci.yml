@@ -10,7 +10,11 @@ permissions:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
 
@@ -22,4 +26,15 @@ jobs:
         run: go vet ./...
 
       - name: Test (race detector)
+        if: runner.os == 'Linux'
         run: go test -race -count=1 ./...
+
+      - name: Test
+        if: runner.os == 'Windows'
+        run: go test -count=1 ./...
+
+      - name: Fuzz (short)
+        if: runner.os == 'Linux'
+        run: |
+          go test -run '^$' -fuzz FuzzModuleConfigSetLevels -fuzztime 15s ./handler
+          go test -run '^$' -fuzz FuzzRedactionHandlerHandle -fuzztime 15s ./handler

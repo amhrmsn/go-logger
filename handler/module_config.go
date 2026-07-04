@@ -133,6 +133,29 @@ func (c *ModuleConfig) SetLevels(spec string) error {
 	return nil
 }
 
+// Levels returns a snapshot of all explicitly configured component levels.
+//
+// The returned map is a copy: mutating it does not affect the config, and
+// later SetLevel calls are not reflected in it. Useful for admin endpoints
+// and debugging dumps. The default level is not included; read it with
+// [ModuleConfig.DefaultLevel].
+func (c *ModuleConfig) Levels() map[string]slog.Level {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	snapshot := make(map[string]slog.Level, len(c.modules))
+	for name, lv := range c.modules {
+		snapshot[name] = lv.Level()
+	}
+	return snapshot
+}
+
+// DefaultLevel returns the current default level for components not
+// explicitly configured.
+func (c *ModuleConfig) DefaultLevel() slog.Level {
+	return c.defaultLevel.Level()
+}
+
 // levelFor returns the [*slog.LevelVar] for the given component, or the
 // default level if the component is not configured.
 func (c *ModuleConfig) levelFor(component string) *slog.LevelVar {

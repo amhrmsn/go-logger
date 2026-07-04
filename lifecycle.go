@@ -48,6 +48,12 @@ type Unwrapper interface {
 	Unwrap() slog.Handler
 }
 
+// maxUnwrapDepth bounds chain traversal so a degenerate cyclic Unwrap chain
+// (a handler that unwraps to itself or an ancestor) cannot loop forever.
+// Real chains are a handful of layers deep; 100 is far beyond any sane
+// composition.
+const maxUnwrapDepth = 100
+
 // Close attempts to close the given handler by checking if it implements
 // [Closer]. If it does not, Close recursively unwraps the handler chain
 // (via the Unwrap() method) to find a Closer in the middleware stack.
@@ -74,7 +80,7 @@ func Close(h slog.Handler) error {
 // Errors from multiple handlers are aggregated using [errors.Join].
 func CloseContext(ctx context.Context, h slog.Handler) error {
 	var errs []error
-	for h != nil {
+	for depth := 0; h != nil && depth < maxUnwrapDepth; depth++ {
 		if c, ok := h.(ContextCloser); ok {
 			if err := c.CloseContext(ctx); err != nil {
 				errs = append(errs, err)
@@ -115,7 +121,7 @@ func Flush(h slog.Handler) error {
 // Errors from multiple handlers are aggregated using [errors.Join].
 func FlushContext(ctx context.Context, h slog.Handler) error {
 	var errs []error
-	for h != nil {
+	for depth := 0; h != nil && depth < maxUnwrapDepth; depth++ {
 		if f, ok := h.(ContextFlusher); ok {
 			if err := f.FlushContext(ctx); err != nil {
 				errs = append(errs, err)
