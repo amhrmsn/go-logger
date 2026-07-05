@@ -38,3 +38,12 @@ jobs:
         run: |
           go test -run '^$' -fuzz FuzzModuleConfigSetLevels -fuzztime 15s ./handler
           go test -run '^$' -fuzz FuzzRedactionHandlerHandle -fuzztime 15s ./handler
+
+      # Executes every benchmark a fixed number of iterations. This guards
+      # against benchmark bit-rot (they must compile and run) and prints
+      # per-commit numbers in the CI log for eyeballing trends. It is NOT an
+      # assertion gate: shared runners are too noisy for reliable pass/fail
+      # thresholds.
+      - name: Benchmarks (smoke)
+        if: runner.os == 'Linux'
+        run: go test -run '^$' -bench . -benchtime=100x -benchmem ./...

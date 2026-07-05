@@ -13,11 +13,11 @@ import (
 //
 // Composition order (innermost → outermost):
 //
-//	base → AsyncHandler → RedactionHandler → SamplingHandler → ModuleHandler → custom middleware
+//	base → AsyncHandler → RedactionHandler → SamplingHandler → DedupHandler → ModuleHandler → custom middleware
 //
 // This means ModuleHandler is checked first at call time (outermost), followed
-// by SamplingHandler, RedactionHandler, and finally AsyncHandler wraps the
-// base handler directly.
+// by DedupHandler, SamplingHandler, RedactionHandler, and finally AsyncHandler
+// wraps the base handler directly.
 //
 // Example:
 //
@@ -31,11 +31,13 @@ type Builder struct {
 	asyncOpts    []handler.AsyncOption
 	redactOpts   []handler.RedactOption
 	sampleOpts   []handler.SampleOption
+	dedupOpts    []handler.DedupOption
 	moduleConfig *handler.ModuleConfig
 	middlewares  []func(slog.Handler) slog.Handler
 	useAsync     bool
 	useRedact    bool
 	useSample    bool
+	useDedup     bool
 	useModule    bool
 }
 
@@ -78,6 +80,18 @@ func (b *Builder) WithSampling(opts ...handler.SampleOption) *Builder {
 	return b
 }
 
+// WithDedup enables the [handler.DedupHandler] middleware with the given
+// options.
+//
+// The dedup handler suppresses repeated identical messages per time window,
+// attaching a suppressed-count attribute when a message passes again. It sits
+// outside sampling so floods are collapsed before the sampling decision.
+func (b *Builder) WithDedup(opts ...handler.DedupOption) *Builder {
+	b.dedupOpts = opts
+	b.useDedup = true
+	return b
+}
+
 // WithModuleFilter enables the [handler.ModuleHandler] middleware with the
 // given configuration.
 //
@@ -111,7 +125,7 @@ func (b *Builder) WithMiddleware(mw func(slog.Handler) slog.Handler) *Builder {
 //
 // Composition order (innermost → outermost):
 //
-//	base → AsyncHandler → RedactionHandler → SamplingHandler → ModuleHandler → custom middleware
+//	base → AsyncHandler → RedactionHandler → SamplingHandler → DedupHandler → ModuleHandler → custom middleware
 //
 // Each middleware is only included if it was configured via the corresponding
 // With*() method.
@@ -138,12 +152,17 @@ func (b *Builder) Build() slog.Handler {
 		h = handler.NewSamplingHandler(h, b.sampleOpts...)
 	}
 
-	// 4. ModuleHandler (outermost built-in).
+	// 4. DedupHandler.
+	if b.useDedup {
+		h = handler.NewDedupHandler(h, b.dedupOpts...)
+	}
+
+	// 5. ModuleHandler (outermost built-in).
 	if b.useModule {
 		h = handler.NewModuleHandler(h, b.moduleConfig)
 	}
 
-	// 5. Custom middleware (outermost).
+	// 6. Custom middleware (outermost).
 	for _, mw := range b.middlewares {
 		h = mw(h)
 	}

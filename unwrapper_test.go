@@ -14,7 +14,12 @@ var (
 	_ logger.Unwrapper = (*handler.RedactionHandler)(nil)
 	_ logger.Unwrapper = (*handler.SamplingHandler)(nil)
 	_ logger.Unwrapper = (*handler.ModuleHandler)(nil)
+	_ logger.Unwrapper = (*handler.DedupHandler)(nil)
 )
+
+// ConsoleHandler is a base handler (it wraps nothing), so it deliberately
+// does NOT implement Unwrapper — only slog.Handler.
+var _ slog.Handler = (*handler.ConsoleHandler)(nil)
 
 // Compile-time assertions for the lifecycle interfaces themselves.
 var (

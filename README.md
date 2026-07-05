@@ -25,8 +25,10 @@
   - [AsyncHandler](#asynchandler)
   - [RedactionHandler](#redactionhandler)
   - [SamplingHandler](#samplinghandler)
+  - [DedupHandler](#deduphandler)
   - [ModuleHandler](#modulehandler)
   - [MultiHandler](#multihandler)
+  - [ConsoleHandler](#consolehandler)
 - [🏗️ Builder Pattern](#️-builder-pattern)
 - [🛑 Graceful Shutdown](#-graceful-shutdown)
 - [📊 Benchmarks](#-benchmarks)
@@ -44,7 +46,10 @@
 | ⚡ **AsyncHandler** | Non-blocking I/O via a background goroutine with configurable buffer and drop policies. |
 | 🕵️ **RedactionHandler** | Protects sensitive data (PII) via key-based, pattern-based (Regex), and type-based redaction. |
 | 🎲 **SamplingHandler** | Reduces log volume with probabilistic filtering, per-level rates, and burst sampling (first-N-per-message guaranteed). |
+| 🔂 **DedupHandler** | Collapses repeated identical messages per time window, keeping the flood visible via a suppressed count. |
 | 🎛️ **ModuleHandler** | Per-component log level filtering with runtime hot-reload capabilities. |
+| 🖥️ **ConsoleHandler** | Human-readable colored output for development — timestamps, level tags, dotted group keys. |
+| 📈 **expvar Stats** | One-liner publishing of async/sampling/dedup counters to `/debug/vars` — stdlib only. |
 | 🔀 **MultiHandler** | Fan-out capability to write logs to multiple outputs simultaneously (e.g., stdout + file). |
 | 🧱 **Builder API** | Fluent, safe API for composing middleware chains in the correct topological order. |
 | ♻️ **Lifecycle Propagation** | Graceful shutdown with `Flush()` and `Close()` traversing safely through all middleware. |
@@ -164,6 +169,26 @@ h := handler.NewSamplingHandler(
 )
 ```
 
+### DedupHandler
+Collapses failure floods — the same error repeated thousands of times — without hiding that they happened. Within each window, the first record per unique message passes; when it passes again later, the number of suppressed copies is attached:
+
+```go
+h := handler.NewDedupHandler(
+	slog.NewJSONHandler(os.Stdout, nil),
+	handler.WithDedupWindow(time.Second),
+)
+log := slog.New(h)
+
+for i := 0; i < 1000; i++ {
+	log.Error("db connection refused") // 1st passes, 999 suppressed
+}
+// One second later:
+log.Error("db connection refused")
+// → {"level":"ERROR","msg":"db connection refused","dedup_suppressed":999}
+```
+
+Deduplication keys on the message only (attributes are not compared). There is no bypass level by default — repeated errors are exactly the flood dedup exists for; set `WithDedupBypassLevel` if a level must never be suppressed.
+
 ### ModuleHandler
 Provides fine-grained, per-component log level filtering that can be updated at runtime without restarting the application.
 
@@ -202,6 +227,30 @@ h := handler.NewMultiHandler(
 log := slog.New(h)
 ```
 
+### ConsoleHandler
+A human-readable base handler for development — colored level tags, compact timestamps, dotted group keys:
+
+```go
+log := slog.New(handler.NewConsoleHandler(os.Stderr))
+log.WithGroup("auth").Info("login ok", "user", "alice", "attempts", 1)
+// 15:04:05.000 INF login ok auth.user=alice auth.attempts=1
+```
+
+Color follows [NO_COLOR](https://no-color.org) and can be forced with `handler.WithConsoleColor(false)`. Use it as the base handler in dev builds and swap in a JSON handler for production.
+
+### Runtime Stats via expvar
+Publish handler counters to the standard `/debug/vars` endpoint — no dependencies:
+
+```go
+import _ "net/http/pprof" // or any mux serving expvar
+
+async := handler.NewAsyncHandler(base)
+handler.PublishAsyncStats("logger.async", async)
+// GET /debug/vars → "logger.async": {"Written":123,"Dropped":0,"Errors":0,"QueueLen":2}
+```
+
+`PublishSampleStats` and `PublishDedupStats` do the same for the other handlers.
+
 ---
 
 ## 🏗️ Builder Pattern
@@ -231,7 +280,7 @@ h := logger.NewBuilder(base).
 log := slog.New(h)
 defer logger.Close(h) // Safely cascades through all layers to close the AsyncHandler
 ```
-**Execution Order:** `ModuleHandler` → `SamplingHandler` → `RedactionHandler` → `AsyncHandler` → `JSONHandler`
+**Execution Order:** `ModuleHandler` → `DedupHandler` → `SamplingHandler` → `RedactionHandler` → `AsyncHandler` → `JSONHandler`
 
 Need a specific handler back out of the chain (e.g. for runtime stats)? Use the generic `Find`:
 
@@ -336,9 +385,13 @@ go-logger/
 ├── handler/            # Core Middlewares
 │   ├── multi.go        # Fan-out
 │   ├── redaction.go    # PII masking
-│   ├── sampling.go     # Probabilistic dropping
+│   ├── sampling.go     # Probabilistic + burst sampling
+│   ├── dedup.go        # Repeated-message suppression
 │   ├── module.go       # Component filtering
+│   ├── console.go      # Human-readable dev handler
+│   ├── expvar.go       # Stats publishing to /debug/vars
 │   └── async.go        # Non-blocking background worker
+├── ROADMAP.md          # Deferred features and the rationale behind them
 └── examples/           # Ready-to-run demonstration code
 ```
 

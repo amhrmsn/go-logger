@@ -9,6 +9,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **DedupHandler** — suppresses repeated identical messages per time window;
+  when a message passes again, the count of suppressed copies is attached as
+  the `dedup_suppressed` attribute. Lock-free fixed-bucket counters, optional
+  bypass level, `Stats()`, and `Builder.WithDedup` integration.
+- **ConsoleHandler** — human-readable development handler: compact
+  timestamps, colored three-letter level tags (respects NO_COLOR), dotted
+  group keys, ambiguous values quoted. slogtest-compliant.
+- **expvar adapters** — `PublishAsyncStats`, `PublishSampleStats`,
+  `PublishDedupStats` expose handler counters on `/debug/vars` using only the
+  standard library.
+- **Benchmark smoke step in CI** — all benchmarks compile and run on every
+  push; numbers printed for trend eyeballing (deliberately not an assertion
+  gate — see ROADMAP.md).
+- **ROADMAP.md** — records deferred features (redaction presets/value
+  scanning, Prometheus module, network sinks, benchmark gate) with rationale,
+  plus permanent non-goals.
+
 - **Burst sampling** — `WithBurstSampling(interval, first, thereafter)`:
   within each window the first N records per unique message always pass,
   then every M-th. Lock-free fixed-bucket counters; guarantees rare events
